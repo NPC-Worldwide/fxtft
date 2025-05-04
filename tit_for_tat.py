@@ -33,6 +33,40 @@ PAYOFF_MATRIX = np.array([
 ])
 
 # --- Core Strategy Definitions (returning COOPERATE/DEFECT) ---
+class FXTFT: # RENAMED CLASS
+    def __init__(self, lookback=10, threshold=2): # Default threshold is 2
+        self.lookback = lookback
+        self.threshold = threshold
+        self.punishment_turns_remaining = 0
+        self.next_punishment_duration = 1 # Starts at 1, doubles
+
+    def __call__(self, history, opponent_history):
+        current_round = len(history)
+        if self.punishment_turns_remaining > 0:
+            self.punishment_turns_remaining -= 1
+            return DEFECT
+        if current_round < self.lookback:
+            return COOPERATE
+        else:
+            recent_opponent_history = np.array(opponent_history[-self.lookback:], dtype=int)
+            num_defections = np.sum(recent_opponent_history == DEFECT)
+            if num_defections >= self.threshold: # Check threshold
+                punishment_duration_this_time = self.next_punishment_duration
+                self.punishment_turns_remaining = punishment_duration_this_time
+                self.next_punishment_duration *= 2 # Double for next time
+                if self.punishment_turns_remaining > 0:
+                    self.punishment_turns_remaining -= 1
+                    return DEFECT
+                else: return COOPERATE
+            else:
+                self.next_punishment_duration = 1 # Reset escalation
+                return COOPERATE
+    def __repr__(self):
+        # Updated representation
+        return f"FXTFT(L={self.lookback},T={self.threshold})"
+
+
+
 
 def always_cooperate(history, opponent_history):
     return COOPERATE
@@ -57,126 +91,10 @@ def tit_for_two_tats(history, opponent_history):
 def random_strategy(history, opponent_history):
     return COOPERATE if np.random.random() < 0.5 else DEFECT
 
-# --- Renamed Strategy: The Forgiving Retaliator (FR) ---
-
-class ForgivingRetaliator: # RENAMED CLASS
-    def __init__(self, lookback=10):
-        self.lookback = lookback
-        self.punishment_turns_remaining = 0
-        self.next_punishment_duration = 1
-
-    def __call__(self, history, opponent_history):
-        current_round = len(history)
-
-        if self.punishment_turns_remaining > 0:
-            self.punishment_turns_remaining -= 1
-            return DEFECT
-
-        if current_round < self.lookback:
-            return COOPERATE
-        else:
-            # Convert recent history slice to NumPy array for efficient check
-            # Ensure opponent_history contains integers
-            recent_opponent_history = np.array(opponent_history[-self.lookback:], dtype=int)
-            num_defections = np.sum(recent_opponent_history == DEFECT)
-
-            if num_defections >= 2:
-                punishment_duration_this_time = self.next_punishment_duration
-                self.punishment_turns_remaining = punishment_duration_this_time
-                self.next_punishment_duration *= 2
-
-                if self.punishment_turns_remaining > 0:
-                    self.punishment_turns_remaining -= 1
-                    return DEFECT
-                else:
-                    return COOPERATE # Should not happen if duration starts >= 1
-            else:
-                self.next_punishment_duration = 1
-                return COOPERATE
-
-    def __repr__(self):
-        # UPDATED representation to reflect new name (can be simpler)
-        return f"ForgivingRetaliator(L={self.lookback})"
-
-# --- Simulation Core (Sequential, NumPy where applicable) ---
 
 
-# --- New Strategy: Severity Punisher (SP) ---
-class SeverityPunisher:
-    def __init__(self, lookback=10, threshold=2, base=4):
-        self.lookback = lookback
-        self.threshold = threshold # Min defects to trigger *any* punishment
-        self.base = base # Base for the geometric series (e.g., 4)
-        self.punishment_turns_remaining = 0
-        # No next_punishment_duration state needed
-
-    def __call__(self, history, opponent_history):
-        current_round = len(history)
-
-        # Serve any ongoing punishment
-        if self.punishment_turns_remaining > 0:
-            self.punishment_turns_remaining -= 1
-            return DEFECT
-
-        # Cooperate initially
-        if current_round < self.lookback:
-            return COOPERATE
-
-        # Analyze recent history
-        recent_opponent_history = np.array(opponent_history[-self.lookback:], dtype=int)
-        num_defections = np.sum(recent_opponent_history == DEFECT)
-
-        # Check threshold
-        if num_defections >= self.threshold:
-            # Calculate punishment duration based on severity (number of defects)
-            # Number of terms in the sum: based on pairs of defections
-            num_terms = num_defections // 2
-            if num_terms > 0:
-                 # Calculate sum of geometric series: base^0 + base^1 + ... + base^(num_terms-1)
-                 # Efficient calculation using formula if base != 1: (base^num_terms - 1) // (base - 1)
-                 # Or direct sum for clarity / robustness if base could be 1
-                 # duration = np.sum(self.base ** np.arange(num_terms)) # Direct sum
-                 if self.base == 1:
-                     duration = num_terms # Sum of 1s
-                 else:
-                     duration = (self.base**num_terms - 1) // (self.base - 1) # Formula
-            else:
-                # This handles the case where threshold is >=2 but num_defects might be odd (e.g., 3)
-                # If threshold=2, num_defects=3 -> num_terms=1 -> duration=1
-                # If threshold=2, num_defects=2 -> num_terms=1 -> duration=1
-                # Set minimum duration if needed, but formula handles base cases.
-                # If num_terms is 0 (e.g. threshold=1, num_defects=1), duration would be 0.
-                # Let's ensure at least 1 round if threshold met, matching user example for d=2,3 -> 1
-                if num_defects >= self.threshold:
-                    num_terms = max(1, num_defects // 2) # Ensure at least 1 term if threshold met
-                    if self.base == 1: duration = num_terms
-                    else: duration = (self.base**num_terms - 1) // (self.base - 1)
-                else:
-                    duration = 0 # Should not happen if threshold check is correct
-
-            # Cap duration? 341 rounds is longer than many games.
-            max_punishment = NUM_ROUNDS # Cap at game length
-            duration = min(duration, max_punishment)
-
-            self.punishment_turns_remaining = duration
-
-            # Start punishment immediately if duration > 0
-            if self.punishment_turns_remaining > 0:
-                self.punishment_turns_remaining -= 1
-                return DEFECT
-            else:
-                return COOPERATE # If calculated duration is 0
-        else:
-            # Opponent behaved well enough, cooperate
-            return COOPERATE
-
-    def __repr__(self):
-         # Include base in representation
-        return f"SeverityPunisher(L={self.lookback},T={self.threshold},B={self.base})"
 
 
-# --- Simulation Core & Analysis Functions ---
-# (run_game, run_tournament, analyze_dynamics, analyze_noise_impact - assumed unchanged)
 def run_game(strategy1_func, strategy2_func, rounds=NUM_ROUNDS, add_noise=False, noise_level=NOISE_LEVEL):
     """Runs a single game sequentially."""
     s1 = strategy1_func() if isinstance(strategy1_func, type) else strategy1_func
@@ -251,11 +169,6 @@ def analyze_noise_impact(strategies_dict, noise_levels, trials_per_matchup=NUM_S
             if name in tournament_results: results[name]['avg_scores'].append(tournament_results[name].get('avg_score', 0)); results[name]['coop_rates'].append(tournament_results[name].get('cooperation_rate', 0))
             else: results[name]['avg_scores'].append(0); results[name]['coop_rates'].append(0); print(f"Warning: Strategy {name} missing results at noise {noise:.2f}")
     return results, noise_levels
-
-
-
-# --- Plotting Functions (Integrated and Adapted for Integer Moves) ---
-# Note: Labels within plots will now use the dictionary key name ('ForgivingRetaliator')
 
 def plot_tournament_results(results, save_path=None):
     """ Plots tournament results bar chart (scores and cooperation rate). """
@@ -865,10 +778,10 @@ def plot_strategy_summary_dashboard(strategy_def, strategy_name, save_path=None)
     print(f"\nGenerating Strategy Dashboard for {strategy_name} (sequential)...")
     opponents = {'ALL_C': always_cooperate, 'ALL_D': always_defect, 'TFT': tit_for_tat,
                  'TFTT': tit_for_two_tats, 'RANDOM': random_strategy}
-    # Add ForgivingRetaliator if not self-testing, for comparison
+    # Add FXTFT if not self-testing, for comparison
     # Use the correct class name here
-    if strategy_name != 'ForgivingRetaliator' and 'ForgivingRetaliator' in globals() and isinstance(globals()['ForgivingRetaliator'], type):
-         opponents['ForgivingRetaliator'] = globals()['ForgivingRetaliator']
+    if strategy_name != 'FXTFT' and 'FXTFT' in globals() and isinstance(globals()['FXTFT'], type):
+         opponents['FXTFT'] = globals()['FXTFT']
 
     fig = plt.figure(figsize=(15, 8))
     # Use passed name for title
@@ -1092,7 +1005,7 @@ def main():
     start_time = time.time()
     np.random.seed(42)
     # Define output directory based on strategies tested
-    output_dir = 'plots_severity_punisher' # New dir name for this test
+    output_dir = 'plots' # New dir name for this test
     os.makedirs(output_dir, exist_ok=True)
     print(f"Outputting plots to ./{output_dir}/")
 
@@ -1103,8 +1016,8 @@ def main():
         'TFT': tit_for_tat,
         'TFTT': tit_for_two_tats,
         'RANDOM': random_strategy,
-        'ForgivingRetaliator': ForgivingRetaliator, # Keep original FR(>=2)
-        'SeverityPunisher': SeverityPunisher, # Add the new strategy
+        'FXTFT': FXTFT, # Keep original FR(>=2)
+
     }
     strategy_names = list(strategies.keys())
     print(f"Strategies included: {', '.join(strategy_names)}")
@@ -1125,41 +1038,27 @@ def main():
     )
 
     print("\n--- Analyzing Dynamics (SeverityPunisher vs TFT) ---")
-    # Analyze the new strategy vs TFT
-    dynamics_sp_vs_tft_no_noise = analyze_dynamics(SeverityPunisher, tit_for_tat, 'SeverityPunisher', 'TFT', noise=False)
-    dynamics_sp_vs_tft_with_noise = analyze_dynamics(SeverityPunisher, tit_for_tat, 'SeverityPunisher', 'TFT', noise=True, noise_level=NOISE_LEVEL)
 
     print("\n--- Generating Plots ---")
     sys.stdout.flush()
 
     # --- Call plotting functions ---
     plot_tournament_results(tournament_results, os.path.join(output_dir, 'tournament_results.png'))
-    # Plot dynamics for the new strategy
-    plot_dynamics(dynamics_sp_vs_tft_no_noise, 'SeverityPunisher', 'TFT', os.path.join(output_dir, 'dynamics_SP_vs_TFT_no_noise.png'))
-    plot_dynamics(dynamics_sp_vs_tft_with_noise, 'SeverityPunisher', 'TFT', os.path.join(output_dir, 'dynamics_SP_vs_TFT_with_noise.png'))
+
     # Plot heatmap for the new strategy
-    plot_cooperation_heatmap(
-        dynamics_sp_vs_tft_no_noise['history1'], dynamics_sp_vs_tft_no_noise['history2'], 'SeverityPunisher', 'TFT',
-        os.path.join(output_dir, 'cooperation_heatmap_SP_vs_TFT.png')
-    )
+
     plot_noise_impact(noise_results, noise_levels_used, os.path.join(output_dir, 'noise_impact_extended.png'))
     plot_strategy_head_to_head(strategies, trials=50, noise=False, save_path=os.path.join(output_dir, 'head_to_head_matrix_no_noise.png'))
     plot_recovery_after_defection(strategies, lookback=10, recovery_rounds=30, save_path=os.path.join(output_dir, 'recovery_after_defection.png'))
     plot_evolutionary_stability(strategies, rounds=50, population_size=50, generations=50, mutation_rate=0.05, save_path=os.path.join(output_dir, 'evolutionary_stability.png'))
     # Plot dashboards for both FR and SP
-    plot_strategy_summary_dashboard(ForgivingRetaliator, 'ForgivingRetaliator', save_path=os.path.join(output_dir, 'dashboard_ForgivingRetaliator.png'))
-    plot_strategy_summary_dashboard(SeverityPunisher, 'SeverityPunisher', save_path=os.path.join(output_dir, 'dashboard_SeverityPunisher.png'))
-    # Plot adaptive response for both
+
     plot_adaptive_response_to_cooperate_defect_ratio(
-        ForgivingRetaliator, 'ForgivingRetaliator',
+        FXTFT, 'FXTFT',
         opponent_cooperation_rates=np.linspace(0, 1, 11), rounds=100, trials=20,
-        save_path=os.path.join(output_dir, 'adaptive_response_ForgivingRetaliator.png')
+        save_path=os.path.join(output_dir, 'adaptive_response_FXTFT.png')
     )
-    plot_adaptive_response_to_cooperate_defect_ratio(
-        SeverityPunisher, 'SeverityPunisher',
-        opponent_cooperation_rates=np.linspace(0, 1, 11), rounds=100, trials=20,
-        save_path=os.path.join(output_dir, 'adaptive_response_SeverityPunisher.png')
-    )
+
     plot_comparative_analysis(strategies, save_path=os.path.join(output_dir, 'comparative_radar_analysis.png'))
 
 
